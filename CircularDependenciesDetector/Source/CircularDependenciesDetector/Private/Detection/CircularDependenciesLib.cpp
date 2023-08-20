@@ -1,21 +1,22 @@
 // Copyright 2022 bstt, Inc. All Rights Reserved.
 
 #include "CircularDependenciesLib.h"
-#include "AssetRegistryModule.h"
+
+#include "../Config/CDD_EditorConfig.h"
+#include "../Config/CDD_ProjectConfig.h"
+#include "AssetRegistry/AssetRegistryModule.h"
 #include "BehaviorTree/BehaviorTree.h"
 #include "BlueprintEditor.h"
 #include "CircularInvolvedAssetItem.h"
-#include "../Config/CDD_EditorConfig.h"
-#include "Editor.h"
 #include "EdGraph/EdGraph.h"
+#include "Editor.h"
 #include "EngineUtils.h"
 #include "Framework/Notifications/NotificationManager.h"
 #include "ImaginaryBlueprintData.h"
+#include "Interfaces/IPluginManager.h"
 #include "Internationalization/Regex.h"
 #include "Subsystems/AssetEditorSubsystem.h"
 #include "Widgets/Notifications/SNotificationList.h"
-#include <Config/CDD_ProjectConfig.h>
-#include "Interfaces/IPluginManager.h"
 
 void UCircularDependenciesLib::SearchInBlueprint(UObject* Asset, bool bAllBlueprints, FString NewSearchTerms)
 {
@@ -30,7 +31,7 @@ void UCircularDependenciesLib::SearchInBlueprint(UObject* Asset, bool bAllBluepr
 		FSlateNotificationManager::Get().AddNotification(notifInfo);
 		UE_LOG(LogTemp, Warning, TEXT("%s, contact me if you know how to implement it"), *message);
 	}
-	else //if (Asset->IsA<UBlueprint>())
+	else // if (Asset->IsA<UBlueprint>())
 	{
 		// UE_LOG(LogTemp, Warning, TEXT("Class name : %s"), *Asset->GetClass()->GetDisplayNameText().ToString());
 		if (IBlueprintEditor* blueprintEditor = StaticCast<IBlueprintEditor*>(assetEditorInstance))
@@ -42,8 +43,7 @@ UClass* UCircularDependenciesLib::GetClassFromAsset(UObject* Asset)
 {
 	if (!IsValid(Asset)) return nullptr;
 
-	if (UBlueprint* blueprint = Cast<UBlueprint>(Asset))
-		return blueprint->GeneratedClass;
+	if (UBlueprint* blueprint = Cast<UBlueprint>(Asset)) return blueprint->GeneratedClass;
 	return nullptr;
 }
 
@@ -52,29 +52,31 @@ TArray<FString> UCircularDependenciesLib::GetAllFunctions(UObject* Asset)
 	TArray<FString> result;
 
 	if (!IsValid(Asset)) return result;
-	
+
 	if (UBlueprint* blueprint = Cast<UBlueprint>(Asset))
-		for (auto p : blueprint->FunctionGraphs)
-			result.Add(p->GetName());
+		for (auto p : blueprint->FunctionGraphs) result.Add(p->GetName());
 
 	return result;
 }
 
-bool UCircularDependenciesLib::IsInGameOrSlateThread()
-{
-	return IsInGameThread() || IsInSlateThread();
-}
+bool UCircularDependenciesLib::IsInGameOrSlateThread() { return IsInGameThread() || IsInSlateThread(); }
 
 void UCircularDependenciesLib::ExecuteTask(const FVoidDelegate& toExecute, bool bInBackground, bool bWait)
 {
 	volatile bool isDone = false;
-	
+
 	// toExecute must be passed as copy because...
 	AsyncTask(bInBackground ? ENamedThreads::AnyBackgroundThreadNormalTask : ENamedThreads::GameThread,
-		[toExecute, &isDone] { toExecute.ExecuteIfBound(); isDone = true; });
+		[toExecute, &isDone]
+	{
+		toExecute.ExecuteIfBound();
+		isDone = true;
+	});
 
 	if (bWait)
-		while (!isDone) {} // wait
+		while (!isDone)
+		{
+		} // wait
 }
 
 bool UCircularDependenciesLib::RegexFind(const FString& pattern, const FString& input)
@@ -82,9 +84,13 @@ bool UCircularDependenciesLib::RegexFind(const FString& pattern, const FString& 
 	return FRegexMatcher(FRegexPattern(pattern), input).FindNext();
 }
 
-void UCircularDependenciesLib::AddToDependencyStack(const TArray<FString>& assetPackageArray, const FName& CurrentAsset, UPARAM(ref) TMap<FName, FNameArray>& DependencyListMap,
-	UPARAM(ref) TArray<FName>& DependencyStack, UPARAM(ref) TSet<FNamePair>& BrokenDependecySet,
-	UPARAM(ref) TArray<UCircularInvolvedAssetItem*>& circularInvolvedItemArray, UPARAM(ref) FBoolHolder& isStopping)
+void UCircularDependenciesLib::AddToDependencyStack(const TArray<FString>& assetPackageArray,
+	const FName& CurrentAsset,
+	UPARAM(ref) TMap<FName, FNameArray>& DependencyListMap,
+	UPARAM(ref) TArray<FName>& DependencyStack,
+	UPARAM(ref) TSet<FNamePair>& BrokenDependecySet,
+	UPARAM(ref) TArray<UCircularInvolvedAssetItem*>& circularInvolvedItemArray,
+	UPARAM(ref) FBoolHolder& isStopping)
 {
 	if (!FModuleManager::Get().IsModuleLoaded("AssetRegistry")) return;
 	if (DependencyStack.Num() >= (int32)UCDD_EditorConfig::Get()->maxDependencyDepth) return;
@@ -95,42 +101,48 @@ void UCircularDependenciesLib::AddToDependencyStack(const TArray<FString>& asset
 	static const FRegexPattern externalPattern(TEXT("/__External[^/]*__/"));
 
 	if (isStopping.value
-		|| !assetPackageArray.FindByPredicate([&CurrentAsset](FString assetPackage) { return CurrentAsset.ToString().StartsWith(assetPackage); })
+		|| !assetPackageArray.FindByPredicate(
+			[&CurrentAsset](FString assetPackage) { return CurrentAsset.ToString().StartsWith(assetPackage); })
 		|| FRegexMatcher(externalPattern, CurrentAsset.ToString()).FindNext())
 	{
 		DependencyStack.RemoveAt(DependencyStack.Num() - 1);
 		return;
 	}
-	
-	if (const FNameArray* pDependencyList = DependencyListMap.Find(CurrentAsset))
-		outDependencies = pDependencyList->content;
+
+	if (const FNameArray* pDependencyList = DependencyListMap.Find(CurrentAsset)) outDependencies = pDependencyList->content;
 	else
 	{
 		if (!getExcludedAssetList().Contains(CurrentAsset.ToString()))
-			assetRegistryModule.GetRegistry().GetDependencies(CurrentAsset, outDependencies,
-				UE::AssetRegistry::EDependencyCategory::Package, UE::AssetRegistry::FDependencyQuery(UE::AssetRegistry::EDependencyQuery::Hard));
+			assetRegistryModule.GetRegistry().GetDependencies(CurrentAsset,
+				outDependencies,
+				UE::AssetRegistry::EDependencyCategory::Package,
+				UE::AssetRegistry::FDependencyQuery(UE::AssetRegistry::EDependencyQuery::Hard));
 		DependencyListMap.Add(CurrentAsset, FNameArray(outDependencies));
 	}
 	for (const auto& childAsset : outDependencies)
 	{
-		if (!assetPackageArray.FindByPredicate([&childAsset](FString assetPackage) { return childAsset.ToString().StartsWith(assetPackage); })
+		if (!assetPackageArray.FindByPredicate(
+			[&childAsset](FString assetPackage) { return childAsset.ToString().StartsWith(assetPackage); })
 			|| FRegexMatcher(externalPattern, childAsset.ToString()).FindNext())
 			continue;
 		FNamePair currentDependency = FNamePair(CurrentAsset, childAsset);
-		if (childAsset.ToString() == CurrentAsset.ToString() || BrokenDependecySet.Contains(currentDependency))
-			continue;
+		if (childAsset.ToString() == CurrentAsset.ToString() || BrokenDependecySet.Contains(currentDependency)) continue;
 		int childAssetIndex = DependencyStack.Find(childAsset);
 		if (childAssetIndex == INDEX_NONE)
-			AddToDependencyStack(assetPackageArray, childAsset, DependencyListMap, DependencyStack, BrokenDependecySet,
-				circularInvolvedItemArray, isStopping);
+			AddToDependencyStack(assetPackageArray,
+				childAsset,
+				DependencyListMap,
+				DependencyStack,
+				BrokenDependecySet,
+				circularInvolvedItemArray,
+				isStopping);
 		else
 		{
 			FNamePair oppositeDependency = FNamePair(childAsset, CurrentAsset);
 			BrokenDependecySet.Add(currentDependency);
 			BrokenDependecySet.Add(oppositeDependency);
 			TArray<FName> involvedDependencyStack;
-			for (int i = childAssetIndex; i < DependencyStack.Num(); i++)
-				involvedDependencyStack.Add(DependencyStack[i]);
+			for (int i = childAssetIndex; i < DependencyStack.Num(); i++) involvedDependencyStack.Add(DependencyStack[i]);
 			UCircularInvolvedAssetItem* circularInvolvedItem = NewObject<UCircularInvolvedAssetItem>();
 			circularInvolvedItem->AssetName = involvedDependencyStack[0];
 			circularInvolvedItem->DependencyStack = involvedDependencyStack;
@@ -140,15 +152,9 @@ void UCircularDependenciesLib::AddToDependencyStack(const TArray<FString>& asset
 	DependencyStack.RemoveAt(DependencyStack.Num() - 1);
 }
 
-int UCircularDependenciesLib::getMaxDetectionCount()
-{
-	return UCDD_EditorConfig::Get()->maxDetectionCount;
-}
+int UCircularDependenciesLib::getMaxDetectionCount() { return UCDD_EditorConfig::Get()->maxDetectionCount; }
 
-float UCircularDependenciesLib::getAutomaticRefreshDelay()
-{
-	return UCDD_EditorConfig::Get()->automaticRefreshDelay;
-}
+float UCircularDependenciesLib::getAutomaticRefreshDelay() { return UCDD_EditorConfig::Get()->automaticRefreshDelay; }
 
 TArray<FPlugin> UCircularDependenciesLib::GetEnabledPlugins()
 {
@@ -158,10 +164,7 @@ TArray<FPlugin> UCircularDependenciesLib::GetEnabledPlugins()
 	return result;
 }
 
-const TArray<FString>& UCircularDependenciesLib::getPluginList()
-{
-	return UCDD_ProjectConfig::Get()->pluginList;
-}
+const TArray<FString>& UCircularDependenciesLib::getPluginList() { return UCDD_ProjectConfig::Get()->pluginList; }
 
 void UCircularDependenciesLib::addPlugin(const FString& plugin)
 {
@@ -175,10 +178,7 @@ void UCircularDependenciesLib::removePlugin(const FString& plugin)
 	UCDD_ProjectConfig::Get()->SaveConfig();
 }
 
-const TArray<FString>& UCircularDependenciesLib::getExcludedAssetList()
-{
-	return UCDD_ProjectConfig::Get()->excludedAssetList;
-}
+const TArray<FString>& UCircularDependenciesLib::getExcludedAssetList() { return UCDD_ProjectConfig::Get()->excludedAssetList; }
 
 bool UCircularDependenciesLib::addExcludedAsset(const FString& excludedAsset)
 {
